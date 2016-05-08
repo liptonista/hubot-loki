@@ -8,6 +8,7 @@
 # Configuration:
 #   HUBOT_SCHEDULE_DEBUG - set "1" for debug
 #   HUBOT_SCHEDULE_DONT_RECEIVE - set "1" if you don't want hubot to be processed by scheduled message
+#   HUBOT_SCHEDULE_DENY_EXTERNAL_CONTROL - set "1" if you don't want to allow anyone to control schedule for other rooms
 #   HUBOT_SCHEDULE_LIST_REPLACE_TEXT - set JSON object like '{"@":"[at]"}' to configure text replacement used when listing scheduled messages
 #
 # Commands:
@@ -17,7 +18,9 @@
 #   hubot schedule [add|new] #<room> "<cron pattern>" <message> - Schedule a message to a specific room that runs recurrently
 #   hubot schedule [cancel|del|delete|remove] <id> - Cancel the schedule
 #   hubot schedule [upd|update] <id> <message> - Update scheduled message
-#   hubot schedule list - List all scheduled messages
+#   hubot schedule list - List all scheduled messages for current room
+#   hubot schedule list #<room> - List all scheduled messages for specified room
+#   hubot schedule list all - List all scheduled messages for any rooms
 #
 # Author:
 #   matsukaz <matsukaz@gmail.com>
@@ -26,6 +29,7 @@
 config =
   debug: process.env.HUBOT_SCHEDULE_DEBUG
   dont_receive: process.env.HUBOT_SCHEDULE_DONT_RECEIVE
+  deny_external_control: process.env.HUBOT_SCHEDULE_DENY_EXTERNAL_CONTROL
   list:
     replace_text: JSON.parse(process.env.HUBOT_SCHEDULE_LIST_REPLACE_TEXT ? '{"@":"[@]"}')
 
@@ -36,6 +40,8 @@ JOBS = {}
 JOB_MAX_COUNT = 10000
 STORE_KEY = 'hubot_schedule'
 
+is_blank = (s) -> !s?.trim()
+
 module.exports = (robot) ->
   robot.brain.on 'loaded', =>
     syncSchedules robot
@@ -44,13 +50,27 @@ module.exports = (robot) ->
     robot.brain.set(STORE_KEY, {})
 
   robot.respond /schedule (?:new|add)(?: #(.*))? "(.*?)" (.*)$/i, (msg) ->
-    schedule robot, msg, msg.match[1], msg.match[2], msg.match[3]
+    target_room = msg.match[1]
+    if config.deny_external_control is '1' and not is_blank(target_room)
+      if target_room not in [msg.message.user.room, msg.message.user.reply_to]
+        return msg.send "Creating schedule for other room is not allowed"
+    schedule robot, msg, target_room, msg.match[2], msg.match[3]
 
-  robot.respond /schedule list/i, (msg) ->
+  robot.respond /schedule list(?: (all|#.*))?/i, (msg) ->
+    target_room = msg.match[1]
+    if is_blank(target_room) or config.deny_external_control is '1'
+      # if target_room is undefined or blank, show schedule for current room
+      # room is ignored when HUBOT_SCHEDULE_DENY_EXTERNAL_CONTROL is set to 1
+      rooms = [msg.message.user.room, msg.message.user.reply_to]
+    else if target_room == "all"
+      show_all = true
+    else
+      rooms = [target_room[1..]]
+
     text = ''
     for id, job of JOBS
-      room = job.user.room || job.user.reply_to
-      text += "#{id}: [ #{job.pattern} ] \##{room} #{job.message} \n"
+      if show_all or job.user.room in rooms
+        text += "#{id}: [ #{job.pattern} ] \##{job.user.room} #{job.message} \n"
     if !!text.length
       text = text.replace(///#{org_text}///g, replaced_text) for org_text, replaced_text of config.list.replace_text
       msg.send text
@@ -115,6 +135,10 @@ updateSchedule = (robot, msg, id, message) ->
   job = JOBS[id]
   return msg.send "Schedule #{id} not found" if !job
 
+  if config.deny_external_control is '1'
+    if job.user.room not in [msg.message.user.room, msg.message.user.reply_to]
+      return msg.send "Updating schedule for other room is not allowed"
+
   job.message = message
   robot.brain.get(STORE_KEY)[id] = job.serialize()
   msg.send "#{id}: Scheduled message updated"
@@ -123,6 +147,10 @@ updateSchedule = (robot, msg, id, message) ->
 cancelSchedule = (robot, msg, id) ->
   job = JOBS[id]
   return msg.send "#{id}: Schedule not found" if !job
+
+  if config.deny_external_control is '1'
+    if job.user.room not in [msg.message.user.room, msg.message.user.reply_to]
+      return msg.send "Canceling schedule for other room is not allowed"
 
   job.cancel()
   delete JOBS[id]
@@ -199,4 +227,3 @@ class Job
 
   serialize: ->
     [@pattern, @user, @message]
-
