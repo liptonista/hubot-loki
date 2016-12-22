@@ -9,6 +9,7 @@
   "hubot-redis-brain",
   "hubot-rules",
   "hubot-schedule",
+  "hubot-shinchoku-dou",
   "hubot-shipit",
   "hubot-thecat"
 ]
